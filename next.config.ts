@@ -1,7 +1,18 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  /* config options here */
-};
+  images: {
+    remotePatterns: [
+      { hostname: 'utfs.io' },          // UploadThing
+      { hostname: '*.supabase.co' },    // Supabase Storage
+      { hostname: 'lh3.googleusercontent.com' }, // Google OAuth avatars
+    ],
+  },
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '5mb',
+    },
+  },
+}
 
-export default nextConfig;
+export default nextConfig
