@@ -36,8 +36,7 @@ Rules:
 - sub_niches: 3-5 items
 - opportunity_scores: 3-5 items, sorted by score descending
 - content_angles: minimum 3 items, maximum 5
-- creator_personas: 3-4 items
-- content_matrix: minimum 5 rows, maximum 8 rows
+- content_matrix: minimum 3 rows, maximum 5 rows
 - All text in Bahasa Indonesia`
 
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
@@ -89,6 +88,8 @@ export interface StoryboardInput {
   selectedNiche: string
   selectedAngle: string
   selectedPersona: string
+  lighting?: string
+  cameraStyle?: string
   style?: string
   accent?: string
 }
@@ -101,22 +102,31 @@ export async function generateStoryboardJSON(
   const promptingPath = path.join(process.cwd(), 'prompts', 'prompting.md')
 
   let anglesRef = ''
-  let promptingRef = ''
 
   try {
-    anglesRef = await fs.readFile(anglesPath, 'utf8')
-    promptingRef = await fs.readFile(promptingPath, 'utf8')
+    const rawAngles = await fs.readFile(anglesPath, 'utf8')
+    // Extract only the selected angle. If selectedAngle is "Angle 1 — Testimonial (Default)", it will look for "## Angle 1".
+    const match = rawAngles.match(new RegExp(`(## ${input.selectedAngle.replace(/[.*+?^$\\{}()|[\\]\\\\]/g, '\\\\$&')}[\\s\\S]*?)(?=\\n## |$)`, 'i'))
+    if (match) {
+      anglesRef = match[0]
+    } else {
+      anglesRef = rawAngles.substring(0, 1500) // Fallback if exact name not found
+    }
   } catch (err) {
     console.warn('Could not read prompt reference files, using fallback.')
   }
 
   const prompt = `Buat storyboard video affiliate TikTok 5 scene dan Google Flow Production Package.
 
-REFERENSI ANGLE:
-${anglesRef.substring(0, 3000)}...
+REFERENSI ANGLE (Gunakan struktur dan arahan khusus angle ini):
+${anglesRef}
 
-REFERENSI PROMPTING GOOGLE FLOW:
-${promptingRef.substring(0, 3000)}...
+PANDUAN VISUAL (Terapkan ke setiap scene's video_prompt/flow_prompt):
+- Pencahayaan (Lighting): ${input.lighting || 'Pencahayaan natural'}
+- Gaya Kamera (Camera Style): ${input.cameraStyle || 'Handheld, candid, framing tidak sempurna'}
+- Tekstur kulit natural (wajib).
+- Tag kreator: creator.png
+- Tag produk: product.jpg
 
 DATA INPUT:
 KARAKTER: ${input.anchorPhrase}
@@ -128,9 +138,10 @@ GAYA NARASI: ${input.style || 'conversational'} | AKSEN: ${input.accent || 'Netr
 
 TUGAS:
 1. Hasilkan 5 scene sesuai dengan ANGLE yang dipilih.
-2. Setiap scene harus memiliki dialogue UGC (Bahasa Indonesia) dan Flow Prompt (Bahasa Indonesia/Inggris sesuai aturan).
-3. Gunakan tag 'creator.png' untuk karakter dan 'product.jpg' untuk produk di dalam flow_prompt.
-4. Buat SATU agent_instruction global yang merangkum kelima scene tersebut.
+2. Setiap scene harus memiliki dialogue UGC (Bahasa Indonesia) yang terdengar natural, BUKAN seperti iklan kaku. Jangan pakai kata "Beli sekarang", "Terbukti klinis".
+3. Setiap scene harus memiliki Flow Prompt. Di dalam Flow Prompt WAJIB menyertakan "creator.png" dan "product.jpg" (jika relevan).
+4. Di Flow Prompt WAJIB sertakan parameter Pencahayaan dan Gaya Kamera dari PANDUAN VISUAL di atas.
+5. Buat SATU agent_instruction global yang merangkum kelima scene tersebut.
 
 Return JSON ONLY (no explanation, no markdown):
 {
@@ -150,7 +161,7 @@ Return JSON ONLY (no explanation, no markdown):
 
 RULES:
 - JSON only, no markdown formatting.
-- flow_prompt MUST follow the rules in prompting.md strictly.`
+- flow_prompt MUST follow the visual guidelines strictly.`
 
   const response = await genai.models.generateContent({
     model: MODEL,
@@ -220,16 +231,13 @@ ${characterPrompt}Style: realistic UGC social media video, natural lighting, can
 export async function analyzeCharacter(
   imageBase64: string
 ): Promise<{ anchorPhrase: string; description: string }> {
-  const prompt = `Analyze this person's photo and create a detailed character anchor phrase for AI image generation consistency.
-CRITICAL RULE: ONLY describe the exact physical features and clothing clearly visible in the photo. DO NOT hallucinate, guess, or add ANY details (like hats, peci, glasses, facial hair, or accessories) if they are not explicitly and clearly present in the image. Keep it purely descriptive of what is seen.
-
+  const prompt = `Analyze this person's photo.
 Return JSON ONLY:
 {
-  "anchorPhrase": "string (detailed visual description: gender, age range, hair color/style, skin tone, explicitly visible clothing/accessories, expression — in English, max 50 words)",
-  "description": "string (brief Indonesian description for user display, max 20 kata)"
+  "anchorPhrase": "string (Gender, age, hair, skin tone, explicitly visible clothing, expression — English, max 30 words)",
+  "description": "string (Singkat dalam Bahasa Indonesia, max 15 kata)"
 }
-
-The anchor phrase will be used verbatim in every image generation prompt to maintain character consistency.`
+RULE: DO NOT hallucinate details not visible.`
 
   const response = await genai.models.generateContent({
     model: MODEL,

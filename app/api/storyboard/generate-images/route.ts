@@ -1,135 +1,101 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { generateSceneImage } from '@/lib/ai/gemini'
 import prisma from '@/lib/prisma'
+import { Client } from '@upstash/qstash'
 import type { StoryboardScene } from '@/types/database'
 
 /**
  * POST /api/storyboard/generate-images
- * Streams SSE progress while generating Imagen 3 reference images for each
- * scene in a saved storyboard, then persists the base64 back into the DB.
- *
- * Body: { storyboardId: string }
- * Events:
- *   { step: 'start', total: number }
- *   { step: 'scene', sceneIndex: number, label: string, progress: number }
- *   { step: 'scene_done', sceneIndex: number, label: string, image_base64: string, progress: number }
- *   { step: 'complete', scenes: StoryboardScene[], progress: 100 }
- *   { step: 'error', message: string }
+ * Asynchronous trigger for image generation.
+ * Publishes messages to QStash for each scene that needs an image,
+ * updates the storyboard status to "generating", and returns 202 Accepted.
  */
 export async function POST(request: NextRequest) {
-  const encoder = new TextEncoder()
+  try {
+    const supabase = await createClient()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const send = (data: object) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
-      }
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
 
-      try {
-        const supabase = await createClient()
-        const {
-          data: { user },
-        } = await supabase.auth.getUser()
+    const body = await request.json()
+    const { storyboardId } = body as { storyboardId: string }
 
-        if (!user) {
-          send({ step: 'error', message: 'Unauthorized' })
-          controller.close()
-          return
-        }
+    if (!storyboardId) {
+      return NextResponse.json({ error: 'storyboardId required' }, { status: 400 })
+    }
 
-        const body = await request.json()
-        const { storyboardId } = body as { storyboardId: string }
+    // Fetch storyboard
+    const storyboard = await prisma.storyboard.findUnique({
+      where: { id: storyboardId, user_id: user.id },
+      include: { character: true },
+    })
 
-        if (!storyboardId) {
-          send({ step: 'error', message: 'storyboardId required' })
-          controller.close()
-          return
-        }
+    if (!storyboard) {
+      return NextResponse.json({ error: 'Storyboard not found' }, { status: 404 })
+    }
 
-        // Fetch storyboard — must belong to the user, include character for consistency
-        const storyboard = await prisma.storyboard.findUnique({
-          where: { id: storyboardId, user_id: user.id },
-          include: { character: true },
-        })
+    const scenes = (storyboard.scenes ?? []) as (StoryboardScene & {
+      image_base64?: string | null
+    })[]
 
-        if (!storyboard) {
-          send({ step: 'error', message: 'Storyboard not found' })
-          controller.close()
-          return
-        }
+    // Change status to generating
+    await prisma.storyboard.update({
+      where: { id: storyboardId },
+      data: { status: 'generating' },
+    })
 
-        const scenes = ((storyboard.scenes ?? []) as unknown[]) as (StoryboardScene & {
-          image_base64?: string | null
-        })[]
+    // Setup QStash client
+    const qstashToken = process.env.QSTASH_TOKEN || ''
+    const qstash = new Client({ token: qstashToken })
 
-        send({ step: 'start', total: scenes.length })
+    const host = process.env.VERCEL_PROJECT_PRODUCTION_URL || request.headers.get("host") || "localhost:3000"
+    const isLocal = host.includes('localhost') || host.includes('127.0.0.1')
+    const protocol = isLocal ? 'http' : 'https'
+    const webhookUrl = `${protocol}://${host}/api/worker/generate-single-scene`
 
-        // Generate image for each scene sequentially
-        for (let i = 0; i < scenes.length; i++) {
-          const scene = scenes[i]
-          const progress = Math.round(((i + 0.5) / scenes.length) * 95)
-
-          send({
-            step: 'scene',
-            sceneIndex: i,
-            label: scene.scene_label,
-            progress,
-          })
-
-          // Skip if already has an image
-          if (scene.image_base64) {
-            send({
-              step: 'scene_done',
-              sceneIndex: i,
-              label: scene.scene_label,
-              image_base64: scene.image_base64,
-              progress: Math.round(((i + 1) / scenes.length) * 95),
+    // Publish a separate job for each scene that needs an image
+    let publishedCount = 0
+    for (let i = 0; i < scenes.length; i++) {
+      if (!scenes[i].image_base64) {
+        try {
+          // If we don't have a real QStash token in local dev, we simulate async fetch
+          if (qstashToken === 'mock_token_for_dev' || !qstashToken) {
+            console.log(`[generate-images] Simulated QStash: Fetching webhook locally for scene ${i}`)
+            fetch(webhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ storyboardId, sceneIndex: i, userId: user.id }),
+            }).catch(e => console.error('Local async fetch failed:', e))
+          } else {
+            console.log(`[generate-images] Publishing QStash job for scene ${i}`)
+            await qstash.publishJSON({
+              url: webhookUrl,
+              body: { storyboardId, sceneIndex: i, userId: user.id },
             })
-            continue
           }
-
-          const imageBase64 = await generateSceneImage(
-            scene.scene_description,
-            scene.video_prompt,
-            scene.scene_label,
-            storyboard?.character?.anchor_phrase || undefined
-          )
-
-          scenes[i] = { ...scene, image_base64: imageBase64 ?? undefined }
-
-          send({
-            step: 'scene_done',
-            sceneIndex: i,
-            label: scene.scene_label,
-            image_base64: imageBase64,
-            progress: Math.round(((i + 1) / scenes.length) * 95),
-          })
+          publishedCount++
+        } catch (queueErr) {
+          console.error(`Failed to publish scene ${i}:`, queueErr)
         }
-
-        // Persist updated scenes (with image_base64) back to DB
-        await prisma.storyboard.update({
-          where: { id: storyboardId },
-          data: { scenes: scenes as any },
-        })
-
-        send({ step: 'complete', scenes, progress: 100 })
-        controller.close()
-      } catch (err: any) {
-        console.error('[generate-images] Error:', err)
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ step: 'error', message: err.message ?? 'Internal error' })}\n\n`)
-        )
-        controller.close()
       }
-    },
-  })
+    }
 
-  return new NextResponse(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    },
-  })
+    // If all scenes already have images (publishedCount === 0), mark as complete immediately
+    if (publishedCount === 0) {
+      await prisma.storyboard.update({
+        where: { id: storyboardId },
+        data: { status: 'complete' },
+      })
+    }
+
+    // Return 202 Accepted, client will poll
+    return NextResponse.json({ success: true, status: 'generating', publishedJobs: publishedCount }, { status: 202 })
+  } catch (err: any) {
+    console.error('[generate-images] Error:', err)
+    return NextResponse.json({ error: err.message || 'Internal Server Error' }, { status: 500 })
+  }
 }

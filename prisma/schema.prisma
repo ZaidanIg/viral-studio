@@ -119,3 +119,11 @@ model TrendingNiche {
 
   @@map("trending_niches")
 }
+
+model SystemConfig {
+  key        String    @id
+  value      Json
+  updated_at DateTime? @default(now())
+
+  @@map("system_configs")
+}

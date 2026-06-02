@@ -57,22 +57,22 @@ export async function POST(request: NextRequest) {
 
     // Increment usage counter if user exists
     if (user) {
-      const currentCount = usageRow?.count || 0
-      
-      if (usageRow) {
-        await prisma.dailyUsage.update({
-          where: { id: usageRow.id },
-          data: { count: currentCount + 1 }
-        })
-      } else {
-        await prisma.dailyUsage.create({
-          data: {
+      await prisma.dailyUsage.upsert({
+        where: {
+          user_id_date: {
             user_id: user.id,
-            date: today,
-            count: 1
+            date: today
           }
-        })
-      }
+        },
+        update: {
+          count: { increment: 1 }
+        },
+        create: {
+          user_id: user.id,
+          date: today,
+          count: 1
+        }
+      })
     }
 
     return NextResponse.json({ data: result, message: 'Berhasil menganalisis niche intelligence' })

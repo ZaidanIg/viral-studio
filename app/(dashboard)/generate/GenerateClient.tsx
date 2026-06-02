@@ -42,6 +42,8 @@ export default function GeneratePage() {
   const [nicheData, setNicheData] = useState<NicheDetectionResult | null>(null)
   const [nicheLoading, setNicheLoading] = useState(false)
   const [nicheError, setNicheError] = useState('')
+  const [lighting, setLighting] = useState('Handheld, candid, sedikit goyangan kamera, framing tidak sempurna')
+  const [cameraStyle, setCameraStyle] = useState('Cahaya ruangan natural, sedikit tidak sempurna')
 
   // Storyboard state
   const [selectedAngle, setSelectedAngle] = useState('')
@@ -152,6 +154,8 @@ export default function GeneratePage() {
           selectedNiche: niche,
           selectedAngle: angle,
           selectedPersona: persona,
+          lighting,
+          cameraStyle,
         }),
       })
 
@@ -594,6 +598,32 @@ export default function GeneratePage() {
             </h2>
             <button onClick={() => setStep(2)} className="btn btn-ghost btn-sm">← Edit Produk</button>
           </div>
+
+          <div className="card" style={{ padding: 20, marginBottom: 24, display: 'flex', gap: 20, background: 'var(--color-surface-2)' }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 8, textTransform: 'uppercase' }}>
+                Gaya Kamera (Visual Style)
+              </label>
+              <select className="input" value={cameraStyle} onChange={e => setCameraStyle(e.target.value)} style={{ width: '100%', fontSize: 13, background: 'var(--color-surface-1)' }}>
+                <option value="Handheld, candid, sedikit goyangan kamera, framing tidak sempurna">UGC Handheld (Paling Realistis)</option>
+                <option value="Static tripod, framing rapi, stabil">Professional Static</option>
+                <option value="Gerakan dinamis mengikuti subjek">Dynamic Tracking</option>
+                <option value="Point of View (POV) dari sudut pandang pengguna">POV Style</option>
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 8, textTransform: 'uppercase' }}>
+                Pencahayaan (Lighting)
+              </label>
+              <select className="input" value={lighting} onChange={e => setLighting(e.target.value)} style={{ width: '100%', fontSize: 13, background: 'var(--color-surface-1)' }}>
+                <option value="Cahaya ruangan natural, sedikit tidak sempurna">Natural Room Light</option>
+                <option value="Cahaya jendela pagi yang lembut">Soft Morning Window Light</option>
+                <option value="Lampu studio yang lembut dan hangat">Warm Studio Light</option>
+                <option value="Pencahayaan dramatis, kontras tinggi">Cinematic Contrast</option>
+              </select>
+            </div>
+          </div>
+
           <NicheIntelligence
             data={nicheData}
             onAngleSelect={(angle, persona, niche) => generateStoryboard(angle, persona, niche)}

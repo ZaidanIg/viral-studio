@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import type { StoryboardScene } from '@/types/database'
 import Toast from '@/components/ui/toast'
@@ -560,77 +560,65 @@ export default function StoryboardViewer({
     }
   }
 
-  // ── Generate all scene images via SSE ──────────────────────────────────────
+  // ── Polling for Background Image Generation ───────────────────────────────
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout
+
+    async function checkStatus() {
+      if (!storyboardId) return
+      try {
+        const res = await fetch(`/api/storyboard/${storyboardId}`)
+        if (!res.ok) return
+        const data = await res.json()
+        const fetchedStoryboard = data.storyboard
+        
+        if (fetchedStoryboard && fetchedStoryboard.scenes) {
+          setScenes(fetchedStoryboard.scenes)
+          
+          // Hitung progress
+          const generatedCount = fetchedStoryboard.scenes.filter((s: any) => !!s.image_base64).length
+          const total = fetchedStoryboard.scenes.length
+          setGenProgress(Math.round((generatedCount / total) * 100))
+          setGenMessage(`Memproses gambar... (${generatedCount}/${total} selesai)`)
+
+          if (fetchedStoryboard.status === 'complete' || generatedCount === total) {
+            setGenStatus('done')
+            setGenMessage('Semua gambar scene berhasil dibuat!')
+          }
+        }
+      } catch (err) {
+        console.error('Polling error:', err)
+      }
+    }
+
+    if (genStatus === 'generating') {
+      // Poll every 4 seconds
+      intervalId = setInterval(checkStatus, 4000)
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId)
+    }
+  }, [genStatus, storyboardId])
+
   async function startGenerateImages() {
     if (!storyboardId || genStatus === 'generating') return
 
     setGenStatus('generating')
     setGenProgress(0)
-    setGenMessage('Menginisialisasi Imagen 3...')
-
-    const ctrl = new AbortController()
-    abortRef.current = ctrl
+    setGenMessage('Memulai background worker via QStash...')
 
     try {
       const res = await fetch('/api/storyboard/generate-images', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storyboardId }),
-        signal: ctrl.signal,
       })
 
-      if (!res.ok || !res.body) throw new Error('Failed to start image generation')
-
-      const reader = res.body.getReader()
-      const dec = new TextDecoder()
-      let buf = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buf += dec.decode(value, { stream: true })
-        const lines = buf.split('\n')
-        buf = lines.pop() ?? ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data:')) continue
-          try {
-            const event = JSON.parse(line.slice(5).trim())
-
-            if (event.step === 'start') {
-              setGenMessage(`Memulai generate ${event.total} gambar scene...`)
-            } else if (event.step === 'scene') {
-              setGenMessage(`Generating "${event.label}"...`)
-              setGenProgress(event.progress)
-            } else if (event.step === 'scene_done') {
-              setGenProgress(event.progress)
-              // Update the specific scene with its new image
-              if (event.image_base64) {
-                setScenes((prev) =>
-                  prev.map((s, i) =>
-                    i === event.sceneIndex ? { ...s, image_base64: event.image_base64 } : s
-                  )
-                )
-              }
-            } else if (event.step === 'complete') {
-              setGenStatus('done')
-              setGenProgress(100)
-              setGenMessage('Semua gambar scene berhasil dibuat!')
-              setScenes(event.scenes)
-            } else if (event.step === 'error') {
-              throw new Error(event.message)
-            }
-          } catch {
-            // ignore parse errors for individual events
-          }
-        }
-      }
+      if (!res.ok) throw new Error('Gagal memicu background task')
     } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        setGenStatus('error')
-        setGenMessage(err.message ?? 'Gagal generate gambar')
-      }
+      setGenStatus('error')
+      setGenMessage(err.message ?? 'Gagal generate gambar')
     }
   }
 

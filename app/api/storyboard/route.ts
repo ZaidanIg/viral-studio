@@ -58,13 +58,15 @@ export async function POST(request: NextRequest) {
 
         const body = await request.json()
         const input: StoryboardInput = {
-          productName: body.productName,
-          visualDesc: body.visualDesc || body.productVisual || '',
-          benefits: body.benefits || body.productBenefits || [],
           anchorPhrase: body.anchorPhrase || body.characterAnchor || body.characterLabel || '',
+          productName: body.productName,
+          visualDesc: body.productDesc,
+          benefits: body.productBenefits?.split('\n').filter((b: string) => b.trim() !== '') || [],
           selectedNiche: body.selectedNiche,
           selectedAngle: body.selectedAngle,
           selectedPersona: body.selectedPersona,
+          lighting: body.lighting,
+          cameraStyle: body.cameraStyle,
         }
 
         send({ step: 'init', message: 'Menganalisis angle dan persona...', progress: 10 })
@@ -129,22 +131,22 @@ export async function POST(request: NextRequest) {
           storyboardId = storyboard.id
 
           // Increment usage
-          const currentCount = usageRow?.count || 0
-          
-          if (usageRow) {
-            await prisma.dailyUsage.update({
-              where: { id: usageRow.id },
-              data: { count: currentCount + 1 }
-            })
-          } else {
-            await prisma.dailyUsage.create({
-              data: {
+          await prisma.dailyUsage.upsert({
+            where: {
+              user_id_date: {
                 user_id: user.id,
-                date: today,
-                count: 1
+                date: today
               }
-            })
-          }
+            },
+            update: {
+              count: { increment: 1 }
+            },
+            create: {
+              user_id: user.id,
+              date: today,
+              count: 1
+            }
+          })
         }
 
         send({

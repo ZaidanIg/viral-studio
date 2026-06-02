@@ -27,10 +27,11 @@ interface SidebarProps {
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', Icon: Home },
-  { href: '/generate', label: 'Generate', Icon: Zap },
+  { href: '/generate', label: 'Generate (Story)', Icon: Zap },
+  { href: '/generate-character', label: 'Generate Karakter', Icon: User },
   { href: '/library', label: 'Library', Icon: Library },
-  { href: '/characters', label: 'Karakter', Icon: User },
-  { href: '/products', label: 'Produk', Icon: Package },
+  { href: '/characters', label: 'Data Karakter', Icon: User },
+  { href: '/products', label: 'Data Produk', Icon: Package },
 ]
 
 export default function Sidebar({ user, dailyCount }: SidebarProps) {
@@ -96,8 +97,8 @@ export default function Sidebar({ user, dailyCount }: SidebarProps) {
       <nav style={{ padding: '12px 0', flex: 1 }}>
         {navItems.map((item) => {
           const isActive =
-            item.href === '/dashboard'
-              ? pathname === '/dashboard'
+            item.href === '/dashboard' || item.href === '/generate'
+              ? pathname === item.href
               : pathname.startsWith(item.href)
           return (
             <Link

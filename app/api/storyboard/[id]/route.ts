@@ -64,3 +64,35 @@ export async function DELETE(
     return NextResponse.json({ error: err.message || 'Internal Server Error' }, { status: 500 })
   }
 }
+
+/**
+ * GET /api/storyboard/[id]
+ * Fetch storyboard details for polling.
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const storyboard = await prisma.storyboard.findUnique({
+      where: { id, user_id: user.id },
+    })
+
+    if (!storyboard) {
+      return NextResponse.json({ error: 'Storyboard not found' }, { status: 404 })
+    }
+
+    return NextResponse.json({ success: true, storyboard })
+  } catch (err: any) {
+    console.error('[GET storyboard] Error:', err)
+    return NextResponse.json({ error: err.message || 'Internal Server Error' }, { status: 500 })
+  }
+}
