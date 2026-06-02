@@ -242,11 +242,13 @@ async function callFlowMediaApi(payload, recaptchaToken, tab) {
     flowProjectId,
     imageInputs = [],
   } = payload;
-
-  // Always use the project ID requested by the caller (or default)
-  // Zeo Studio's project IDs have the correct Flow Graph nodes to support Image Inputs!
-  const effectiveProjectId = flowProjectId || DEFAULT_PROJECT_ID;
   
+  // Extract project ID from the active labs tab URL if possible
+  const labsUrlMatch = tab.url ? tab.url.match(/project\/([a-f0-9\-]+)/i) : null;
+  const tabProjectId = labsUrlMatch ? labsUrlMatch[1] : null;
+
+  const effectiveProjectId = flowProjectId || tabProjectId || DEFAULT_PROJECT_ID;
+
   console.log(`[Extension] Using Project ID: ${effectiveProjectId}`);
   
   const endpoint = BASE_ENDPOINT.replace('{projectId}', effectiveProjectId);
@@ -303,8 +305,12 @@ async function callFlowMediaApi(payload, recaptchaToken, tab) {
 async function uploadFlowImageApi(payload, tab) {
   const { imageBase64, bearerToken, aspectRatio = 'IMAGE_ASPECT_RATIO_PORTRAIT' } = payload;
 
-  // Always use the project ID requested by the caller (or default)
-  const effectiveProjectId = payload.flowProjectId || DEFAULT_PROJECT_ID;
+  // Extract project ID from the active labs tab URL if possible
+  const labsUrlMatch = tab.url ? tab.url.match(/project\/([a-f0-9\-]+)/i) : null;
+  const tabProjectId = labsUrlMatch ? labsUrlMatch[1] : null;
+
+  // Prioritize payload > tab > default
+  const effectiveProjectId = payload.flowProjectId || tabProjectId || DEFAULT_PROJECT_ID;
 
   const requestPayload = {
     imageInput: {
