@@ -79,11 +79,13 @@ function getCachedProjectId() {
 // ─────────────────────────────────────────────────────────────
 async function fetchFromLabsTab(tabId, url, headers, bodyPayload) {
   console.log(`[Extension] Executing fetch from inside labs.google.com tab ${tabId}...`);
+  console.log(`[FLOW URL]`, url);
   const results = await chrome.scripting.executeScript({
     target: { tabId: tabId },
     world: 'MAIN',
     func: async (fetchUrl, fetchHeaders, fetchBody) => {
       try {
+        console.log(`[FLOW URL EXEC]`, fetchUrl);
         const res = await fetch(fetchUrl, {
           method: 'POST',
           credentials: 'include',
@@ -92,6 +94,7 @@ async function fetchFromLabsTab(tabId, url, headers, bodyPayload) {
           body: fetchBody
         });
         const text = await res.text();
+        console.log(`[FLOW RESPONSE]`, res.status, text.substring(0, 500));
         return { ok: res.ok, status: res.status, text: text };
       } catch (err) {
         return { ok: false, status: 0, text: err.message || 'Fetch failed inside tab' };
@@ -253,31 +256,45 @@ async function callFlowMediaApi(payload, recaptchaToken, tab) {
   
   const endpoint = BASE_ENDPOINT.replace('{projectId}', effectiveProjectId);
 
-  const sessionId = `;${Date.now()}`;
+  const sessionId = payload.sessionId || `;${Date.now()}`;
   const recaptchaContext = {
     token: recaptchaToken,
     applicationType: 'RECAPTCHA_APPLICATION_TYPE_WEB',
   };
 
+  // workflowId: from frontend payload > intercepted template > null
+  const workflowId = payload.workflowId
+    || cachedPayloadTemplate?.requests?.[0]?.workflowId
+    || cachedPayloadTemplate?.clientContext?.workflowId
+    || null;
+  if (workflowId) {
+    console.log(`[Extension] Using workflowId: ${workflowId}`);
+  } else {
+    console.warn(`[Extension] No workflowId — generate once on labs.google to capture it.`);
+  }
+
+  // Build clientContext matching the exact Labs payload schema
+  const buildClientContext = () => ({
+    recaptchaContext,
+    sessionId,
+    projectId: effectiveProjectId,
+    tool: 'PINHOLE',
+    ...(workflowId ? { workflowId } : {}),
+  });
+
+  // batchId is a random UUID per generate request (like Labs does)
+  const batchId = crypto.randomUUID();
+
   const requestPayload = {
-    clientContext: {
-      recaptchaContext,
-      sessionId,
-      projectId: effectiveProjectId,
-      tool: 'PINHOLE',
-    },
+    clientContext: buildClientContext(),
+    mediaGenerationContext: { batchId },
     requests: [
       {
-        clientContext: {
-          recaptchaContext,
-          sessionId,
-          projectId: effectiveProjectId,
-          tool: 'PINHOLE',
-        },
+        clientContext: buildClientContext(),
         seed: Math.floor(Math.random() * 1000000),
         imageModelName,
         imageAspectRatio,
-        prompt,
+        structuredPrompt: { parts: [{ text: prompt }] },
         imageInputs,
       },
     ],
@@ -320,7 +337,7 @@ async function uploadFlowImageApi(payload, tab) {
       aspectRatio,
     },
     clientContext: {
-      sessionId: `;${Date.now()}`,
+      sessionId: payload.sessionId || `${Date.now()}`,
       tool: 'ASSET_MANAGER',
     },
   };
@@ -356,11 +373,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const tab = await getLabsTab();
-        const effectiveProjectId = message.payload.flowProjectId || DEFAULT_PROJECT_ID;
         
         const attemptGenerate = async (modelName) => {
           let token = await getRecaptchaToken(tab, 'PINHOLE_GENERATE_IMAGE');
-          let payloadWithModel = { ...message.payload, imageModelName: modelName, flowProjectId: effectiveProjectId };
+          let payloadWithModel = { ...message.payload, imageModelName: modelName };
           try {
             return await callFlowMediaApi(payloadWithModel, token, tab);
           } catch (err) {
@@ -417,6 +433,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const tab = await getLabsTab();
         const apiResponse = await uploadFlowImageApi(message.payload, tab);
+        
+        console.log(`[UPLOAD RESPONSE]`, JSON.stringify(apiResponse, null, 2));
+        
         sendResponse(apiResponse);
       } catch (err) {
         sendResponse({ error: true, message: err.message || 'Unknown error' });

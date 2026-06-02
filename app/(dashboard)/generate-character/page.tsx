@@ -66,7 +66,9 @@ export default function GenerateCharacterPage() {
   // Image Reference State
   const [referenceImage, setReferenceImage] = useState<File | null>(null);
   const [referenceMediaId, setReferenceMediaId] = useState<string | null>(null);
+  const [referenceWorkflowId, setReferenceWorkflowId] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const sessionIdRef = React.useRef(`${Date.now()}`);
 
   // No reCAPTCHA initialization needed on client side anymore.
   // The Chrome Extension handles it directly on labs.google.com.
@@ -127,7 +129,7 @@ export default function GenerateCharacterPage() {
     });
   };
 
-  const uploadImageToFlow = async (base64String: string): Promise<string> => {
+  const uploadImageToFlow = async (base64String: string): Promise<{ mediaId: string; workflowId: string | null }> => {
     const requestId = Date.now().toString();
     
     return new Promise((resolve, reject) => {
@@ -146,12 +148,32 @@ export default function GenerateCharacterPage() {
           return;
         }
         
-        const mediaId = detail.data?.mediaGenerationId?.mediaGenerationId;
-        if (!mediaId) {
+        const rawMediaId = detail.data?.mediaGenerationId?.mediaGenerationId;
+        if (!rawMediaId) {
           reject(new Error('No media ID returned from upload.'));
           return;
         }
-        resolve(mediaId);
+
+        // The upload token is a base64-encoded protobuf containing TWO UUIDs:
+        // UUID[0] = image asset ID (imageInputs[].name)
+        // UUID[1] = workflowId (required by batchGenerateImages)
+        let mediaId = rawMediaId;
+        let workflowId: string | null = null;
+        try {
+          const pad = 4 - (rawMediaId.length % 4);
+          const padded = pad !== 4 ? rawMediaId + '='.repeat(pad) : rawMediaId;
+          const decoded = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+          const uuidMatches = decoded.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi);
+          if (uuidMatches && uuidMatches.length >= 2) {
+            // Keep mediaId as rawMediaId (base64 string)
+            workflowId = uuidMatches[1];
+            console.log('[Upload] Extracted workflowId:', workflowId);
+          }
+        } catch (e) {
+          console.warn('Failed to decode upload token', e);
+        }
+
+        resolve({ mediaId, workflowId });
       };
 
       window.addEventListener(`VIRAL_STUDIO_UPLOAD_RESPONSE_${requestId}`, handleResponse);
@@ -162,6 +184,7 @@ export default function GenerateCharacterPage() {
           payload: {
             imageBase64: base64String,
             bearerToken,
+            sessionId: sessionIdRef.current,
           }
         }
       }));
@@ -209,14 +232,18 @@ export default function GenerateCharacterPage() {
 
     try {
       let currentMediaId = referenceMediaId;
+      let currentWorkflowId = referenceWorkflowId;
 
       if (referenceImage && !currentMediaId) {
         setIsUploading(true);
         try {
           // Compress the image before uploading so Google's API doesn't crash (500 error)
           const base64 = await compressImage(referenceImage);
-          currentMediaId = await uploadImageToFlow(base64);
+          const uploadResult = await uploadImageToFlow(base64);
+          currentMediaId = uploadResult.mediaId;
+          currentWorkflowId = uploadResult.workflowId;
           setReferenceMediaId(currentMediaId);
+          setReferenceWorkflowId(currentWorkflowId);
         } catch (err: any) {
           throw new Error('Gagal mengunggah gambar referensi: ' + err.message);
         } finally {
@@ -228,6 +255,7 @@ export default function GenerateCharacterPage() {
 
       let imageInputs: any[] = [];
       if (currentMediaId) {
+        // Use the raw base64 token with IMAGE_INPUT_TYPE_REFERENCE
         imageInputs = [
           {
             name: currentMediaId,
@@ -275,8 +303,10 @@ export default function GenerateCharacterPage() {
           payload: {
             prompt,
             bearerToken,
+            sessionId: sessionIdRef.current,
             imageModelName: 'GEM_PIX_2',
             imageInputs,
+            ...(currentWorkflowId ? { workflowId: currentWorkflowId } : {}),
           }
         }
       }));
