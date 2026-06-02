@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+@theme {
+  --color-zinc-750: #333338;
+}
+
+@layer base {
+  body {
+    @apply bg-[#0f0f11] text-gray-100 min-h-screen;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+}

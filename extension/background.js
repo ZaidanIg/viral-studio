@@ -14,7 +14,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // ─────────────────────────────────────────────────────────────
 let cachedToken = null;
 let cachedTokenTs = 0;
-const TOKEN_TTL_MS = 90 * 1000; // reCAPTCHA tokens last ~2 min, we use 90s
+const TOKEN_TTL_MS = 300 * 1000; // reCAPTCHA tokens last ~5 min in our stolen state
 
 let cachedBearer = null;
 let cachedBearerTs = 0;
@@ -26,7 +26,7 @@ const PROJECT_ID_TTL_MS = 24 * 60 * 60 * 1000; // Project IDs are fairly static,
 
 // Relay messages from content-relay.js
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === 'VS_RECAPTCHA_TOKEN_CAPTURED') {
+  if (message.type === 'RECAPTCHA_CAPTURED') {
     console.log('[Background] Received intercepted reCAPTCHA token, length:', message.token?.length);
     cachedToken = message.token;
     cachedTokenTs = Date.now();
@@ -42,8 +42,9 @@ chrome.runtime.onMessage.addListener((message) => {
     cachedProjectIdTs = Date.now();
   }
   if (message.type === 'VS_PAYLOAD_TEMPLATE_CAPTURED') {
-    console.log('[Background] Received intercepted Payload Template');
+    console.log('[Background] Received intercepted Payload Template from URL:', message.url);
     cachedPayloadTemplate = message.payloadTemplate;
+    console.log('[VS Interceptor] EXACT JSON DUMP:', JSON.stringify(cachedPayloadTemplate, null, 2));
   }
 });
 
@@ -85,7 +86,7 @@ async function fetchFromLabsTab(tabId, url, headers, bodyPayload) {
     world: 'MAIN',
     func: async (fetchUrl, fetchHeaders, fetchBody) => {
       try {
-        console.log(`[FLOW URL EXEC]`, fetchUrl);
+        window.__vs_isProxy = true;
         const res = await fetch(fetchUrl, {
           method: 'POST',
           credentials: 'include',
@@ -93,6 +94,7 @@ async function fetchFromLabsTab(tabId, url, headers, bodyPayload) {
           headers: fetchHeaders,
           body: fetchBody
         });
+        window.__vs_isProxy = false;
         const text = await res.text();
         console.log(`[FLOW RESPONSE]`, res.status, text.substring(0, 500));
         return { ok: res.ok, status: res.status, text: text };
@@ -159,7 +161,7 @@ async function getRecaptchaToken(tab, action = 'IMAGE_GENERATION') {
   }
 
   // Strategy 2: Generate token from lab tab (may fail without user interaction)
-  console.log(`[Extension] No intercepted token found. Generating fresh token (action: ${action})...`);
+  console.warn(`[Extension] No intercepted token found. Generating fresh token (action: ${action})...`);
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -240,7 +242,7 @@ async function callFlowMediaApi(payload, recaptchaToken, tab) {
   const {
     prompt,
     imageModelName = 'GEM_PIX_2',
-    imageAspectRatio = 'IMAGE_ASPECT_RATIO_PORTRAIT',
+    imageAspectRatio = 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR',
     bearerToken,
     flowProjectId,
     imageInputs = [],
@@ -248,6 +250,12 @@ async function callFlowMediaApi(payload, recaptchaToken, tab) {
   
   // Extract project ID from the active labs tab URL if possible
   const labsUrlMatch = tab.url ? tab.url.match(/project\/([a-f0-9\-]+)/i) : null;
+  
+  if (cachedPayloadTemplate) {
+    console.log("[VS Interceptor] CACHED PAYLOAD TEMPLATE:", JSON.stringify(cachedPayloadTemplate, null, 2));
+  } else {
+    console.warn("[VS Interceptor] No cached payload template available!");
+  }
   const tabProjectId = labsUrlMatch ? labsUrlMatch[1] : null;
 
   const effectiveProjectId = flowProjectId || tabProjectId || DEFAULT_PROJECT_ID;
@@ -293,20 +301,79 @@ async function callFlowMediaApi(payload, recaptchaToken, tab) {
     });
   }
 
-  const requestPayload = {
-    clientContext: buildClientContext(),
-    mediaGenerationContext: { batchId },
-    requests: [
-      {
-        clientContext: buildClientContext(),
-        seed: Math.floor(Math.random() * 1000000),
-        imageModelName,
-        imageAspectRatio,
-        structuredPrompt: { parts: [{ text: prompt }] },
-        imageInputs,
-      },
-    ],
-  };
+  let requestPayload;
+
+  if (cachedPayloadTemplate) {
+    console.log("[Extension] Building payload from cached template (SAFE MODE)");
+    requestPayload = structuredClone(cachedPayloadTemplate);
+    
+    // Inject dynamic variables into the cloned template
+    if (requestPayload.clientContext) {
+      requestPayload.clientContext.sessionId = sessionId;
+      requestPayload.clientContext.projectId = effectiveProjectId;
+      if (requestPayload.clientContext.recaptchaContext) {
+        requestPayload.clientContext.recaptchaContext.token = recaptchaToken;
+      }
+      if (workflowId) requestPayload.clientContext.workflowId = workflowId;
+    }
+    
+    if (requestPayload.mediaGenerationContext) {
+      requestPayload.mediaGenerationContext.batchId = batchId;
+    }
+    
+    if (imageInputs && imageInputs.length > 0) {
+      requestPayload.useNewMedia = true;
+    }
+    
+    if (requestPayload.requests && requestPayload.requests.length > 0) {
+      const req = requestPayload.requests[0];
+      
+      if (req.clientContext) {
+        req.clientContext.sessionId = sessionId;
+        req.clientContext.projectId = effectiveProjectId;
+        if (req.clientContext.recaptchaContext) {
+          req.clientContext.recaptchaContext.token = recaptchaToken;
+        }
+        if (workflowId) req.clientContext.workflowId = workflowId;
+      }
+      
+      req.imageModelName = imageModelName;
+      
+      // Only override aspect ratio if it's explicitly passed (in some cases Flow might restrict it)
+      if (imageAspectRatio) req.imageAspectRatio = imageAspectRatio;
+      
+      req.seed = Math.floor(Math.random() * 1000000);
+      
+      if (req.structuredPrompt && req.structuredPrompt.parts) {
+        req.structuredPrompt.parts = [{ text: prompt }];
+      }
+      
+      if (payload.imageInputs && payload.imageInputs.length > 0) {
+        // EXACT KEY ORDER IS CRITICAL FOR RECAPTCHA SIGNATURE
+        req.imageInputs = payload.imageInputs.map(input => ({
+          imageInputType: input.imageInputType || 'IMAGE_INPUT_TYPE_BASE_IMAGE',
+          name: input.name
+        }));
+      }
+    }
+  } else {
+    console.log("[Extension] No template found, building payload manually (FALLBACK MODE)");
+    requestPayload = {
+      clientContext: buildClientContext(),
+      mediaGenerationContext: { batchId },
+      ...(imageInputs && imageInputs.length > 0 ? { useNewMedia: true } : {}),
+      requests: [
+        {
+          clientContext: buildClientContext(),
+          imageModelName,
+          imageAspectRatio,
+          structuredPrompt: { parts: [{ text: prompt }] },
+          seed: Math.floor(Math.random() * 1000000),
+          ...(imageInputs && imageInputs.length > 0 ? { imageInputs } : {}),
+        },
+      ],
+    };
+  }
 
   console.log("[FINAL FLOW PAYLOAD]", JSON.stringify(requestPayload, null, 2));
   console.log("[REQUEST KEYS]", Object.keys(requestPayload.requests[0]));
@@ -331,7 +398,7 @@ async function callFlowMediaApi(payload, recaptchaToken, tab) {
 // Upload Image API
 // ─────────────────────────────────────────────────────────────
 async function uploadFlowImageApi(payload, tab) {
-  const { imageBase64, bearerToken, aspectRatio = 'IMAGE_ASPECT_RATIO_PORTRAIT' } = payload;
+  const { imageBase64, bearerToken, aspectRatio = 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR' } = payload;
 
   // Extract project ID from the active labs tab URL if possible
   const labsUrlMatch = tab.url ? tab.url.match(/project\/([a-f0-9\-]+)/i) : null;
@@ -373,7 +440,7 @@ async function uploadFlowImageApi(payload, tab) {
 // Message Listener
 // ─────────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'VS_RECAPTCHA_TOKEN_CAPTURED') {
+  if (message.type === 'RECAPTCHA_CAPTURED') {
     // Already handled above, just ignore here
     return false;
   }
@@ -391,15 +458,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           try {
             return await callFlowMediaApi(payloadWithModel, token, tab);
           } catch (err) {
-            if (String(err.message).includes('403') || String(err.message).includes('reCAPTCHA evaluation failed')) {
-              console.warn(`[Extension] 403 on ${modelName} — invalidating token cache and retrying...`);
-              cachedToken = null;
-              cachedTokenTs = 0;
-              await chrome.tabs.reload(tab.id, { bypassCache: true });
-              await sleep(4000);
-              token = await getRecaptchaToken(tab, 'IMAGE_GENERATION');
-              return await callFlowMediaApi(payloadWithModel, token, tab);
-            }
             throw err;
           }
         };
@@ -454,5 +512,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
 
     return true;
+  }
+});
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === 'RECAPTCHA_ACTION_LOG') {
+    console.log('[Background] GOOGLE RECAPTCHA ACTION USED:', message.action, 'SiteKey:', message.siteKey);
   }
 });

@@ -10,9 +10,9 @@ window.addEventListener('message', (event) => {
   const { __vsType, token, bearer } = event.data;
 
   try {
-    if (__vsType === 'TOKEN_CAPTURED' && token && token.length > 100) {
+    if (__vsType === 'RECAPTCHA_CAPTURED' && token && token.length > 100) {
       console.log('[VS Relay] Forwarding reCAPTCHA token to background, length:', token.length);
-      chrome.runtime.sendMessage({ type: 'VS_RECAPTCHA_TOKEN_CAPTURED', token })
+      chrome.runtime.sendMessage({ type: 'RECAPTCHA_CAPTURED', token })
         .catch(err => console.warn('[VS Relay] sendMessage (token) failed:', err.message));
     }
 
@@ -24,15 +24,20 @@ window.addEventListener('message', (event) => {
 
     if (__vsType === 'PROJECT_ID_CAPTURED' && event.data.projectId) {
       console.log('[VS Relay] Forwarding Project ID to background:', event.data.projectId);
-      chrome.runtime.sendMessage({ type: 'VS_PROJECT_ID_CAPTURED', projectId: event.data.projectId })
+      chrome.runtime.sendMessage({ type: 'VS_PROJECT_ID_CAPTURED', projectId: event.data.projectId, url: event.data.url })
         .catch(err => console.warn('[VS Relay] sendMessage (projectId) failed:', err.message));
     }
 
     if (__vsType === 'PAYLOAD_TEMPLATE_CAPTURED' && event.data.payloadTemplate) {
       console.log('[VS Relay] Forwarding Payload Template to background');
-      chrome.runtime.sendMessage({ type: 'VS_PAYLOAD_TEMPLATE_CAPTURED', payloadTemplate: event.data.payloadTemplate })
+      chrome.runtime.sendMessage({ type: 'VS_PAYLOAD_TEMPLATE_CAPTURED', payloadTemplate: event.data.payloadTemplate, url: event.data.url })
         .catch(err => console.warn('[VS Relay] sendMessage (payloadTemplate) failed:', err.message));
     }
+
+    if (__vsType === 'RECAPTCHA_ACTION_LOG') {
+      try { chrome.runtime.sendMessage({ type: 'RECAPTCHA_ACTION_LOG', action: event.data.action, siteKey: event.data.siteKey }); } catch(e){}
+    }
+
   } catch (err) {
     console.warn('[VS Relay] Error:', err.message);
   }
