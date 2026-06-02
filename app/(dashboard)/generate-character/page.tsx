@@ -165,12 +165,17 @@ export default function GenerateCharacterPage() {
           const decoded = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
           const uuidMatches = decoded.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi);
           if (uuidMatches && uuidMatches.length >= 2) {
-            // Keep mediaId as rawMediaId (base64 string)
+            mediaId = uuidMatches[0];
             workflowId = uuidMatches[1];
-            console.log('[Upload] Extracted workflowId:', workflowId);
+            console.log('[Upload] Extracted mediaId:', mediaId, 'workflowId:', workflowId);
           }
         } catch (e) {
           console.warn('Failed to decode upload token', e);
+        }
+        
+        if (!mediaId || !workflowId) {
+          reject(new Error('Invalid upload response format: missing mediaId or workflowId.'));
+          return;
         }
 
         resolve({ mediaId, workflowId });
@@ -255,11 +260,11 @@ export default function GenerateCharacterPage() {
 
       let imageInputs: any[] = [];
       if (currentMediaId) {
-        // Use the raw base64 token with IMAGE_INPUT_TYPE_REFERENCE
+        // currentMediaId is the extracted UUID[0] from uploadImageToFlow decode
         imageInputs = [
           {
             name: currentMediaId,
-            imageInputType: 'IMAGE_INPUT_TYPE_REFERENCE',
+            imageInputType: 'IMAGE_INPUT_TYPE_BASE_IMAGE',
           }
         ];
       }
@@ -303,7 +308,7 @@ export default function GenerateCharacterPage() {
           payload: {
             prompt,
             bearerToken,
-            sessionId: sessionIdRef.current,
+            sessionId: ';' + sessionIdRef.current, // Generate endpoint expects the semicolon prefix
             imageModelName: 'GEM_PIX_2',
             imageInputs,
             ...(currentWorkflowId ? { workflowId: currentWorkflowId } : {}),

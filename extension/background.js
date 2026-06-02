@@ -284,6 +284,14 @@ async function callFlowMediaApi(payload, recaptchaToken, tab) {
 
   // batchId is a random UUID per generate request (like Labs does)
   const batchId = crypto.randomUUID();
+  
+  if (imageInputs && imageInputs.length > 0) {
+    console.log(`[Extension] Reference Image Payload Info:`, {
+      sessionId,
+      workflowId,
+      imageInputs,
+    });
+  }
 
   const requestPayload = {
     clientContext: buildClientContext(),
@@ -299,6 +307,9 @@ async function callFlowMediaApi(payload, recaptchaToken, tab) {
       },
     ],
   };
+
+  console.log("[FINAL FLOW PAYLOAD]", JSON.stringify(requestPayload, null, 2));
+  console.log("[REQUEST KEYS]", Object.keys(requestPayload.requests[0]));
 
   // Use user-provided bearer token, fall back to auto-captured one from labs.google
   const effectiveBearer = bearerToken || getCachedBearer();
